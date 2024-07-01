@@ -1,0 +1,1 @@
+head -10001 ./data/imdb_embedding.csv > ./data/imdb_embedding_sample.csv
