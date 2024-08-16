@@ -30,7 +30,7 @@ def read_embedding_csv(csv_path, ebd_cols: list):
     return df
 
 
-def get_avg_embeddings(sentences, tokenizer, model):
+def get_avg_embeddings(corpus, tokenizer, model):
     """计算句子的平均嵌入"""
     encoded_inputs = tokenizer(corpus, return_tensors='pt')
     with torch.no_grad():
