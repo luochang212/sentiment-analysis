@@ -18,10 +18,16 @@ IMDB_FILE = './data/IMDB Dataset.csv'
 
 
 class BertTransformerEncoder(nn.Module):
-    def __init__(self, n_classes, nhead=8, d_model=768, num_layers=6):
+    def __init__(self, n_classes, nhead=8, d_model=768, num_layers=6, freeze_bert=False):
         super().__init__()
         self.bert = BertModel.from_pretrained(EN_BERT_PATH)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead)
+
+        # Freeze BERT parameters
+        if freeze_bert:
+            for param in self.bert.parameters():
+                param.requires_grad = False
+
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.drop = nn.Dropout(p=0.2)
         self.out = nn.Linear(d_model, n_classes)
@@ -33,7 +39,7 @@ class BertTransformerEncoder(nn.Module):
             attention_mask=attention_mask
         )
         encoder_hidden_states = bert_outputs.last_hidden_state  # [batch_size, seq_len, hidden_dim]
-        
+
         # transformer encoder -> pooling -> dropout -> fully_connected_layer
         encoded_output = self.transformer_encoder(encoder_hidden_states)
         # 通过池化获得句子级别的表征
@@ -44,8 +50,8 @@ class BertTransformerEncoder(nn.Module):
         return self.out(x)
 
 
-def prepare(sample_num=None, df=None):
-    if df is not None:
+def prepare(sample_num, df=None):
+    if df is None:
         df = pd.read_csv(IMDB_FILE)
         if sample_num is not None:
             df = df.sample(n=sample_num)
@@ -57,19 +63,19 @@ def prepare(sample_num=None, df=None):
 
     X = df['review'].swifter.apply(remove_html_label).tolist()
     y = df['sentiment'].swifter.apply(lambda e: 1 if e == 'positive' else 0).tolist()
-    
-    return X, y
-    
 
-def load_data(X, y, batch_size):
+    return X, y
+
+
+def load_data(X, y, batch_size, test_size=0.2, random_state=80):
     # 分割训练集和测试集（其实是验证集）
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=80)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
 
     tokenizer = BertTokenizer.from_pretrained(EN_BERT_PATH)
 
     train_dataset = sed.SentimentDataset(X_train, y_train, tokenizer, max_len=512)
     test_dataset = sed.SentimentDataset(X_test, y_test, tokenizer, max_len=512)
-    
+
     # 用 DataLoader 加载数据
     train_iter = DataLoader(train_dataset,
                             batch_size,
@@ -79,7 +85,24 @@ def load_data(X, y, batch_size):
                            batch_size,
                            shuffle=True,
                            num_workers=4)
+
     return train_iter, test_iter
+
+
+def create_model(freeze_bert, device, n_classes=2):
+    net = BertTransformerEncoder(n_classes=n_classes, freeze_bert=freeze_bert)
+
+    # 权重初始化
+    def init_weights(m):
+        if isinstance(m, nn.Linear):
+            torch.nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+            if m.bias is not None:
+                torch.nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Embedding):
+            torch.nn.init.xavier_uniform_(m.weight)
+
+    net.apply(init_weights)
+    return net.to(device)
 
 
 def evaluate_accuracy(net, data_iter, device):
@@ -108,12 +131,12 @@ def train_epoch(net, train_iter, loss, updater, device):
     for data in train_iter:
         # 计算梯度并更新参数
         y_hat = net(input_ids=data['input_ids'].to(device),
-                      attention_mask=data['attention_mask'].to(device))
+                    attention_mask=data['attention_mask'].to(device))
 
         y = data['label'].to(device)
         l = loss(y_hat, y)
 
-        # 使用PyTorch内置的优化器和损失函数
+        # 使用 PyTorch 内置的优化器和损失函数
         updater.zero_grad()
         l.mean().backward()
         updater.step()
@@ -126,14 +149,13 @@ def train_epoch(net, train_iter, loss, updater, device):
 
 def train(net, train_iter, test_iter, loss, num_epochs, updater, device):
     """训练模型"""
-    # animator = util.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 1.0],
-    #                     legend=['train loss', 'train acc', 'test acc'])
+    animator = util.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 1.0],
+                        legend=['train loss', 'train acc', 'test acc'])
 
     for epoch in range(num_epochs):
-        print(f'epoch: {epoch}')
         train_metrics = train_epoch(net, train_iter, loss, updater, device)
         test_acc = evaluate_accuracy(net, test_iter, device)
-        # animator.add(epoch + 1, train_metrics + (test_acc,))
+        animator.add(epoch + 1, train_metrics + (test_acc,))
     train_loss, train_acc = train_metrics
 
     print(f'train_loss: {train_loss:.3f}')
@@ -141,31 +163,31 @@ def train(net, train_iter, test_iter, loss, num_epochs, updater, device):
     print(f'test_acc: {test_acc:.3f}')
 
 
-def main(batch_size, num_epochs, sample_num, df=None):
+def main(batch_size, num_epochs, freeze_bert=False, sample_num=None, df=None):
     X, y = prepare(sample_num, df)
     train_iter, test_iter = load_data(X, y, batch_size)
 
-    model = BertTransformerEncoder(n_classes=2)
+    # 定义模型
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
+    net = create_model(freeze_bert, device, n_classes=2)
 
     # 损失函数
     loss = nn.CrossEntropyLoss(reduction='none')
 
     # 优化器
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = torch.optim.Adam(net.parameters())
 
     # 训练模型
-    train(net=model,
-      train_iter=train_iter,
-      test_iter=test_iter,
-      loss=loss,
-      num_epochs=num_epochs,
-      updater=optimizer,
-      device=device)
+    train(net=net,
+          train_iter=train_iter,
+          test_iter=test_iter,
+          loss=loss,
+          num_epochs=num_epochs,
+          updater=optimizer,
+          device=device)
 
 
 if __name__ == "__main__":
-    main(batch_size=256,
-         num_epochs=10,
-         sample_num=20)
+    main(batch_size=25,
+         num_epochs=5,
+         sample_num=100)

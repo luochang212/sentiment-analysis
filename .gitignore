@@ -2,10 +2,7 @@
 .idea
 .vscode
 .ipynb_checkpoints
-.nox
 __pycache__
-dist
-/data/IMDB Dataset.csv
-/data/embedding.csv
 /data/bert-*
-/data/imdb_*
+/data/*.csv
+/data/*.pth
