@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
-from ast import literal_eval
+import ast
+
 from IPython import display
 
 
@@ -12,8 +13,11 @@ def embedding_df_to_csv(df, csv_path, ebd_cols: list):
     """将带有 embedding 的 DataFrame 存入 csv"""
     def ebd2str(embedding):
         if not isinstance(embedding, list):
-            ebd = embedding.tolist()
-        return json.dumps(ebd)
+            if isinstance(embedding, str):
+                embedding = ast.literal_eval(embedding)
+            else:
+                embedding = embedding.tolist()
+        return json.dumps(embedding)
 
     for col in ebd_cols:
         df[col] = df[col].apply(ebd2str)
@@ -25,7 +29,7 @@ def read_embedding_csv(csv_path, ebd_cols: list):
     """将带有 embedding 的 csv 读入 DataFrame"""
     df = pd.read_csv(csv_path)
     for col in ebd_cols:
-        df[col] = df[col].apply(literal_eval).apply(lambda e: np.array(e))
+        df[col] = df[col].apply(ast.literal_eval).apply(lambda e: np.array(e))
 
     return df
 
